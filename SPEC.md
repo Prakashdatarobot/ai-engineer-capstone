@@ -1,201 +1,165 @@
-# SPEC: Kubernetes Docs Q&A Agent
+SPEC: Ticket Triage Agent
+	
+Status	v1 (draft) - switched from Option B to Option A; grows weekly, see Changelog
+Author	Prakash Narayanasamy
+Capstone option	A. Ticket Triage Agent (recommended default)
+Last updated	2026-11-03
 
-| | |
-|---|---|
-| **Status** | v0 (draft) - Week 0. Grows weekly; see [Changelog](#changelog) |
-| **Author** | Prakash Narayanasamy |
-| **Capstone option** | B. Docs Q&A Agent ("talk to my docs") |
-| **Last updated** | 2026-10-19 |
+Structure follows Design Docs at Google (context, goals and non-goals, design, alternatives, cross-cutting concerns), mapped onto the course's 8 spec sections. This is a "mini design doc": short, focused on trade-offs, updated as the design meets reality. Sections marked TBD (Week N) are decided in that week, not guessed now.
 
-> Structure follows [Design Docs at Google](https://www.industrialempathy.com/posts/design-docs-at-google/)
-> (context, goals and non-goals, design, alternatives, cross-cutting concerns), mapped onto the
-> course's 8 spec sections. This is a "mini design doc": short, focused on trade-offs, updated as
-> the design meets reality. Sections marked *TBD (Week N)* are decided in that week, not guessed now.
+1. Context and scope
 
----
+Support teams receive a steady stream of tickets that must be routed to the right queue, given a priority, and either answered or escalated. Much of this is repetitive: many new tickets resemble tickets that were already resolved, and the answer already exists in that history.
 
-## 1. Context and scope
+This project builds an agent that reads a support ticket, classifies its queue, priority and type, retrieves similar resolved tickets, and either drafts an answer with citations or escalates to a human. It uses only a public, synthetic ticket dataset.
 
-Kubernetes has a large public documentation set (kubernetes.io, sourced from the
-`kubernetes/website` repository) split into Concepts, Tasks, Tutorials and Reference.
-Engineers who support Kubernetes platforms answer the same kinds of questions repeatedly
-("How does a Pod get restarted?", "How do I drain a node?") and spend time finding the right
-page, then quoting or paraphrasing it.
+2. Problem
+Who: support engineers who triage and route incoming tickets.
+Cost today: time spent reading and routing each ticket; misroutes bounce between teams and delay the first useful answer; known answers are re-written from scratch because similar past tickets are hard to find.
+3. Users
 
-This project builds an agent that answers Kubernetes questions **only from the official docs**,
-**cites the pages it used**, and **hands off** when the docs do not cover the question, instead of
-guessing.
+A support engineer works a queue of incoming tickets. For each ticket the agent shows a suggested queue, priority and type, plus either a draft answer that cites the resolved tickets it drew on, or an escalation with a short reason. The engineer accepts, edits or overrides the suggestion. The agent never replies to a customer directly.
 
-## 2. Problem
-
-- **Who:** support and platform engineers answering Kubernetes questions from customers and colleagues.
-- **Cost today:** time spent searching and cross-reading pages; inconsistent answers; answers that
-  drift from the documented behaviour; general-purpose chatbots that answer confidently without
-  sources, including when the docs say nothing.
-
-## 3. Users
-
-A support or platform engineer asks a question in plain English from a CLI (later via an agent
-interface) and gets back an answer with links to the doc pages it is based on. The engineer
-checks the cited pages before reusing the answer. When the agent hands off, the engineer gets a
-short note explaining what it searched and why it could not answer.
-
-## 4. Goals and non-goals
-
-### Goals
-
-- Answer Kubernetes questions grounded in the official English docs.
-- Cite at least one source page (and chunk) for every answer.
-- Hand off clearly when the docs do not cover the question, rather than inventing an answer.
-- Classify each question by topic: `concepts`, `tasks`, or `reference`.
-- Be measured: one command runs the eval set and reports the success metrics (section 7).
-
-### Non-goals
+4. Goals and non-goals
+Goals
+Classify each ticket's queue, priority and type as validated JSON.
+Retrieve similar resolved tickets and use their answers as the knowledge base.
+Either draft an answer with citations (ticket ids) or escalate to a human with a reason.
+Expose the capabilities as MCP tools: search_kb, get_ticket, create_escalation.
+Never escalate the same ticket twice (idempotent escalation).
+Be measured: one command runs the eval set and reports the success metrics (section 7).
+Non-goals
 
 Things that could reasonably be goals but are deliberately out of scope:
 
-- **Acting on clusters.** No `kubectl`, no API calls to a real cluster; the agent only reads docs.
-- **Answering beyond the docs.** No general Kubernetes knowledge from the model's training data;
-  if the docs don't say it, the agent hands off.
-- **Multiple doc versions or languages.** One pinned snapshot, English only.
-- **Filing real upstream issues.** `open_doc_issue` records a gap locally (SQLite); it never
-  creates issues on GitHub.
-- **Fine-tuning a model.** Retrieval plus prompting only.
-- **A web UI.** CLI first; a UI is not needed to meet any gate.
-- **Real customer data.** Only public docs and hand-written questions.
+Auto-replying to customers. Every answer is a draft for a human.
+Real customer data. Synthetic public data only, even though the use case mirrors real work.
+Integrating a real ticketing system (Salesforce, Jira, Zendesk). create_escalation writes to a local SQLite table.
+Languages other than English. The dataset is filtered to language = en.
+Fine-tuning a model. Prompting, retrieval and tools only.
+A web UI. CLI first; a UI is not needed to meet any gate.
+5. Inputs and outputs
 
-## 5. Inputs and outputs
+In: a ticket (subject and body as text, plus a ticket id).
 
-**In:** a question as plain text.
+Out (JSON, validated with Pydantic from Week 3):
 
-**Out** (JSON, validated with Pydantic from Week 3):
-
-```json
+json
 {
-  "topic": "concepts | tasks | reference",
-  "status": "answered | handoff",
+  "ticket_id": "string",
+  "queue": "string (one of the dataset's queue labels)",
+  "priority": "string (one of the dataset's priority labels)",
+  "type": "string (one of the dataset's type labels)",
+  "action": "answer | escalate",
   "answer": "string or null",
-  "citations": [{"page": "docs/concepts/workloads/pods/pod-lifecycle", "chunk_id": "..."}],
-  "handoff_reason": "string or null"
+  "citations": ["ticket ids of the resolved tickets used"],
+  "escalation_reason": "string or null"
 }
-```
 
-Exact field names may change in Week 3; the shape (topic, answered-or-handoff, citations) is the
-contract.
+Allowed label values come from the dataset, not from free text. Exact field names may change in Week 3; the shape (labels, answer-or-escalate, citations) is the contract.
 
-## 6. Data
+6. Data
+	
+Dataset	Tobi-Bueck/customer-support-tickets on Hugging Face (synthetic)
+Licence	CC BY-NC 4.0: attribution required, non-commercial use only (this is a learning project)
+Filter	English only (language = en)
+Fields used	subject, body, answer, queue, priority, type. Week 3: confirm field names and label values against the dataset card and record them here.
+Snapshot	Pin the dataset revision so results are reproducible. TBD: record the revision.
 
-| | |
-|---|---|
-| **Knowledge base** | `kubernetes/website`, `content/en/docs/` - [github.com/kubernetes/website](https://github.com/kubernetes/website) |
-| **Licence** | CC BY 4.0 (attribution required: credited in the README and in citations) |
-| **Snapshot** | Pinned to one commit SHA so results are reproducible. *TBD (Week 2): record the SHA.* |
-| **Scope** | Start with `concepts/` and `tasks/`. Generated API reference pages are excluded at first (very long, table-heavy) and revisited in Week 4. |
-| **Questions** | 30 hand-written questions, each with gold page(s) and expected status. About 1 in 4 should be **out of scope** (not answerable from the docs) so handoff is actually tested. |
-| **Split** | 20 labelled questions for retrieval tuning (Week 4); the 30-case eval set (Week 6) is the scoreboard and is not used to tune prompts. |
+Split (decided now because it prevents leakage later):
 
-Gold labels allow **more than one correct page**, because several pages often cover the same topic.
+Set	Size	Used for
+Ingest sample	100 tickets	Week 2 ingest and tests
+Classifier eval	50 labelled tickets	Week 3 gate
+Held-out eval	30 labelled tickets	Week 6 baseline and every later comparison; never used to tune prompts
+Knowledge base	Resolved tickets not in either eval set	Week 4 retrieval
 
-## 7. Success metrics
+Eval tickets are excluded from the knowledge base, otherwise retrieval would find the ticket itself and its own answer, and the metrics would look far better than reality.
 
-The five numbers measured every week from Week 3, with **provisional** targets. Real targets are
-set in Week 6 once a baseline exists.
+7. Success metrics
 
-| Metric | Definition | Provisional target |
-|---|---|---|
-| Answer accuracy | Answer judged correct **and** cites a gold page | >= 70% (Week 3 gate), raise after baseline |
-| Retrieval recall@5 | A gold page is in the top 5 retrieved chunks | >= 0.70 (Week 4 gate) |
-| Cost per question | Model spend per question, from token counts | TBD (Week 3) |
-| Latency p50 / p95 | End-to-end time per question | TBD (Week 3) |
-| Handoff rate | Share of questions handed off; checked against out-of-scope labels | Close to the share of out-of-scope questions in the eval set |
+The five numbers measured every week from Week 3. Targets are provisional and are reset in Week 6 once a baseline exists.
 
-Handoff correctness matters in both directions: handing off an answerable question is a miss,
-and answering an out-of-scope question is a worse miss (it is a confident wrong answer).
+Metric	Definition	Provisional target
+Queue accuracy	Predicted queue matches the dataset label	>= 70% (Week 3 gate), >= 80% final
+Cost per ticket	Model spend per ticket, from token counts	<= USD 0.01
+Latency p95	End-to-end time per ticket	<= 8 s
+Escalation rate	Share of tickets routed to a human	10-25%
+Duplicate actions	Escalations created twice for the same ticket	0
 
-## 8. The design (overview)
+Supporting metrics: valid-JSON rate (50/50 at Week 3), retrieval recall@5 on 20 tickets (>= 0.70 at Week 4, where a hit means a hand-checked relevant resolved ticket is in the top 5), and priority and type accuracy reported alongside queue accuracy.
 
-```mermaid
-flowchart LR
-    U[Engineer] -->|question| A[Docs Q&A agent]
-    A -->|classify topic| M[Claude API]
-    A -->|search_docs / get_page| T[MCP server]
-    T --> V[(Vector store: doc chunks)]
-    T --> D[(Doc snapshot: markdown)]
-    A -->|open_doc_issue| G[(SQLite: gap log)]
-    I[Ingest] -->|clean, chunk, embed| V
-    S[kubernetes/website snapshot] --> I
-    A -->|answer + citations or handoff| U
-```
+Escalation is judged in both directions: escalating an easy ticket wastes a human's time, but answering a ticket the knowledge base doesn't cover produces a confident wrong answer, which is worse.
 
-1. **Ingest** (Weeks 1-2): read the pinned markdown, strip front matter and Hugo shortcodes,
-   keep the page path as the stable id.
-2. **Classify** (Week 3): the model labels the question `concepts | tasks | reference` as JSON.
-3. **Retrieve** (Week 4): embed chunks into Chroma; retrieve top-k with chunk ids for citations.
-4. **Tools** (Week 5): MCP server with `search_docs`, `get_page`, `open_doc_issue`.
-5. **Agent loop and evals** (Week 6): LangGraph graph with memory; one-command eval.
-6. **Architecture choice** (Week 7): single agent vs supervisor over router, retriever and
-   answer-checker; kept only if the evals justify it.
-7. **Hardening and observability** (Weeks 8-9): rate-limited batch question queue, retries,
-   trace per question, latency and cost alarms.
-8. **Security** (Week 10): prompt injection planted in a doc page; audit log of every lookup.
+8. The design (overview)
+classify queue, priority,type
+search_kb / get_ticket
+create_escalation
+draft answer + citations orescalation
+Incoming ticket
+Triage agent
+Claude API
+MCP server
+Vector store: resolvedticket answers
+Ticket records: JSON /SQLite
+SQLite: escalations, keyedby ticket id
+Support engineer
+HF dataset, en only
+Ingest: clean, validate, split
+Ingest (Weeks 1-2): load English tickets into dataclasses, clean text, split into the sets above, save as JSON; runs as a CLI in Docker with tests.
+Classify (Week 3): the model returns queue, priority and type as validated JSON; two tools (get_ticket, lookup_history) added to the classifier.
+Retrieve (Week 4): embed resolved ticket answers into Chroma; return the top-k similar tickets with ids for citations.
+Tools (Week 5): MCP server with search_kb, get_ticket, create_escalation.
+Agent loop and evals (Week 6): LangGraph graph with memory; 30-ticket eval in one command.
+Architecture choice (Week 7): single agent vs supervisor over classifier, retriever and escalation agents; kept only if the evals justify it.
+Hardening and observability (Weeks 8-9): queue of incoming tickets, retries with backoff, idempotent escalation; trace per ticket, p95 and cost-per-ticket alarms.
+Security (Week 10): prompt injection via the ticket body; audit log of every escalation.
 
-**Handoff rule (first version):** hand off when retrieval returns nothing above a relevance
-threshold, or when the answer-check finds claims not supported by a retrieved chunk.
-*TBD (Week 4-6): threshold chosen from data, not guessed.*
+Escalation rule (first version): escalate when classification confidence is low, when no retrieved ticket is similar enough, or when the draft answer contains claims not supported by the cited tickets. TBD (Weeks 4-6): thresholds chosen from data, not guessed.
 
-## 9. Alternatives considered
+Idempotency: create_escalation uses the ticket id as its key, so retrying the same call returns the existing escalation instead of creating a second one.
+
+9. Alternatives considered
 
 Initial view; each is revisited when the relevant week produces numbers.
 
-| Alternative | Why not (for now) |
-|---|---|
-| **Long context: put the docs in the prompt** | The doc set is far larger than a context window, and cost per question would be high. Citations would also be harder to tie to exact chunks. |
-| **Keyword search only (BM25)** | Cheap and strong on exact terms like `PodDisruptionBudget`, but weak on paraphrased questions. Kept as a **baseline** to compare against embeddings in Week 4; hybrid search is a candidate. |
-| **Fine-tune a model on the docs** | Expensive, goes stale with every docs release, and does not produce citations. Non-goal. |
-| **Use kubernetes.io site search** | No control over ranking, no chunk-level citations, and not measurable offline. |
-| **Answer from model knowledge, docs as a bonus** | Breaks the core promise (grounded, cited, hands off when uncovered). |
+Alternative	Why not (for now)
+Keyword rules for routing	Cheap and transparent, but brittle with paraphrased tickets. Useful as a sanity baseline.
+Classic ML classifier (TF-IDF + logistic regression)	Fast, cheap, and possibly strong on queue labels. Worth running once as a baseline in Week 3: if it matches the LLM's accuracy, that's an important finding. It can't draft answers, though.
+Single LLM call, no retrieval	Simpler, but answers come from model knowledge rather than resolved tickets, with no citations.
+Fine-tune a model on the tickets	Costly, goes stale as tickets change, and is a non-goal for this course.
+Fully automatic replies	Removes the human check that keeps wrong answers away from customers. Non-goal.
+10. Cross-cutting concerns
+Security: ticket text is untrusted input; Week 10 tests prompt injection via the ticket body. Tools are read-only except create_escalation, which writes only to a local SQLite table. API key with a spend limit; no keys or secrets committed (.env in .gitignore).
+Privacy: synthetic public data only; no real customer data, ever. Treat ticket text as if it could contain personal data anyway, so logs never print full ticket bodies.
+Licensing: CC BY-NC 4.0, non-commercial learning use, with attribution in the README.
+Observability: from Week 9, one trace per ticket covering model calls, tool calls, tokens, cost and latency; alarms on p95 latency and cost per ticket.
+Cost: USD 10-25 course budget; cost per ticket tracked from Week 3.
+11. Risks and unknowns
+Risk	How to find out early
+Synthetic labels are noisy or inconsistent	Week 3: check 20 labels by hand before trusting accuracy numbers
+Queues are imbalanced, so accuracy hides poor results on small queues	Report per-queue counts (Week 2) and per-queue accuracy (Week 3)
+The language field is wrong for some tickets	Spot-check 20 filtered tickets in Week 2
+Eval tickets leak into the knowledge base	Split before indexing; a test asserts no eval id is in the KB
+Resolved answers in the dataset are themselves wrong	Escalate on weak support; spot-check cited answers in Week 4
+Escalation threshold too strict or too loose	Escalation rate measured against hand labels in the eval set
+Model spend overruns	Log tokens from the first API call; spend limit on the key
+12. Phases
 
-## 10. Cross-cutting concerns
+Target dates assume one course week per calendar week starting 2026-10-12. Adjust to your actual progress.
 
-- **Security:** doc content is untrusted input to the model; Week 10 plants an injection in a doc
-  page and measures it. Tools are read-only except `open_doc_issue`, which writes only to a local
-  SQLite file. API key with a spend limit; no keys or secrets committed (`.env` in `.gitignore`).
-- **Privacy:** public docs and hand-written questions only; no customer data, ever.
-- **Licensing:** CC BY 4.0 attribution in the README; every answer cites its source pages.
-- **Observability:** from Week 9, one trace per question covering model calls, tool calls,
-  tokens, cost and latency; alarms on p95 latency and cost.
-- **Cost:** USD 10-25 course budget; cost per question tracked from Week 3.
-
-## 11. Risks and unknowns
-
-| Risk | How to find out early |
-|---|---|
-| Markdown noise (front matter, shortcodes, code blocks) hurts chunk quality | Week 1-2: print 20 cleaned pages and inspect by eye |
-| Several pages answer the same question, so "gold page" is ambiguous | Allow multiple gold pages; review 10 labels by hand in Week 4 |
-| Judging answer correctness is subjective | Write a short rubric before Week 6; spot-check any LLM judge against hand grades |
-| Handoff threshold too strict (misses answers) or too loose (guesses) | Out-of-scope questions in the eval set measure both directions |
-| Docs change between snapshots | Pin one commit SHA; never re-ingest silently |
-| Model spend overruns | Log tokens from the first API call (Week 3); small eval set; spend limit on the key |
-
-## 12. Phases
-
-Target dates assume one course week per calendar week starting 2026-10-12.
-
-| Phase | Weeks | Target end | Exit criteria |
-|---|---|---|---|
-| 1. Foundations | 0-2 | 2026-11-01 | Week 2 gate: `docker run` ingests the doc snapshot; 10 tests green; 1 PR merged |
-| 2. Model core | 3-4 | 2026-11-15 | Topic classifier valid JSON; recall@5 >= 0.70 on 20 questions; answers cite chunk ids |
-| 3. Agent | 5-6 | 2026-11-29 | MCP tools work in Inspector; 8/10 scripted tasks; 30-case baseline recorded |
-| 4. Architecture choice | 7 | 2026-12-06 | Single vs supervisor compared on the same evals; decision record written |
-| 5. Production hardening | 8-9 | 2026-12-20 | Batch queue survives failures; trace per question; alarms fire in a test |
-| 6. Secure and ship | 10 | 2026-12-27 | Injection red team passed; audit log; final report vs baseline |
-
-## 13. Open questions
-
-- Which commit SHA to pin, and whether to include `tutorials/`?
-- Chunk by heading section or by fixed size? (Week 4 experiment decides.)
-- Who reviews the 30 gold labels besides me?
-
-## Changelog
-
-- **v0 (2026-10-19):** first draft - context, goals, non-goals, data, provisional metrics, phases.
+Phase	Weeks	Target end	Exit criteria
+1. Foundations	0-2	2026-11-01	docker run ingests 100 tickets; 10 tests green in the container; image builds from a clean clone
+2. Model core	3-4	2026-11-15	50/50 valid JSON, queue accuracy >= 70%, cost and latency recorded; recall@5 >= 0.70 with cited ticket ids
+3. Agent	5-6	2026-11-29	MCP tools work in Inspector; 8/10 scripted tasks; 30-ticket baseline recorded
+4. Architecture choice	7	2026-12-06	Single vs supervisor compared on the same evals; decision record written
+5. Production hardening	8-9	2026-12-20	50-user load test < 1% errors, 0 duplicate escalations; trace per ticket; alarms fire in a test
+6. Secure and ship	10	2026-12-27	<= 1 of 20+ injections succeeds; escalations audited; final report vs baseline
+13. Open questions
+Which dataset revision to pin?
+How many distinct queue labels are there in the English subset, and are any too small to evaluate?
+Should priority errors count less than queue errors (e.g. one level off)?
+Who reviews the 30 eval labels besides me?
+Changelog
+v1 (2026-11-03): switched capstone from Option B (Docs Q&A) to Option A (Ticket Triage); rewrote scope, data, metrics, design and risks for tickets.
+v0 (2026-10-19): first draft for Option B.
