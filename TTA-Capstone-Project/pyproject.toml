@@ -7,7 +7,14 @@ authors = [
     { name = "Prakashdatarobot", email = "prakash.narayanasamy@datarobot.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "datarobot>=3.20.0",
+    "dr>=1.9.3",
+    "ipython>=9.18.1",
+    "openai>=3.46.0",
+    "pydantic>=2.14.3",
+    "python-dotenv>=1.2.4",
+]
 
 [project.scripts]
 tta-capstone-project = "tta_capstone_project.ingest:cli"
